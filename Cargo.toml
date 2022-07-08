@@ -1,0 +1,10 @@
+[package]
+name = "swappy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.58"
+clap = { version = "3.2.8", features = [ "clap_derive" ] }
+libc = "0.2.126"
+reedline-repl-rs = "1.0.2"

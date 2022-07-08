@@ -324,6 +324,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "parse_int"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d695b79916a2c08bcff7be7647ab60d1402885265005a6658ffe6d763553c5a"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "proc-macro-error"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -548,6 +557,7 @@ dependencies = [
  "bytesize",
  "clap",
  "libc",
+ "parse_int",
  "reedline-repl-rs",
 ]
 

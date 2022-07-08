@@ -1,5 +1,13 @@
 //! Interactive tool to mess around with swap and physical memory on illumos
 
+// TODO next ideas:
+// - better describe what "used" and "available" are
+// - play around with some real examples to validate how I think this works
+// - print out more kstats:
+//   - swap allocation failures
+//   - memory values: availrmem, freemem, etc.
+//   - pageout activity?
+
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
@@ -49,35 +57,43 @@ fn cmd_swap_mappings(
     _args: ArgMatches,
     swappy: &mut Swappy,
 ) -> Result<Option<String>, SwappyError> {
+    Ok(Some(do_print_swap_mappings(swappy)))
+}
+
+fn do_print_swap_mappings(swappy: &Swappy) -> String {
     let mut s = String::new();
-    s.push_str(&format!("{:18}  {:8}  {:9}  {}\n", "ADDR", "SIZE (B)", "SIZE (GB)", ""));
+    s.push_str("SWAPPY-CREATED MAPPINGS\n");
+    s.push_str(&format!(
+        "{:18}  {:11}  {:9}  {}\n",
+        "ADDR", "SIZE (B)", "SIZE (GB)", ""
+    ));
     for m in &swappy.mappings {
         s.push_str(&format!(
-            "{:16p}  {:8}  {:6.2} {}\n",
+            "{:16p}  {:11}  {:6.2} {}\n",
             m.addr,
             m.size,
             m.size / 1024 / 1024 / 1024,
             if m.reserved { "" } else { "NORESERVE" }
         ));
     }
-    Ok(Some(s))
+    s
 }
 
 fn cmd_swap_reserve(
     args: ArgMatches,
     swappy: &mut Swappy,
 ) -> Result<Option<String>, SwappyError> {
-    do_swap(args, swappy, true)
+    do_swap_create_mapping(args, swappy, true)
 }
 
 fn cmd_swap_noreserve(
     args: ArgMatches,
     swappy: &mut Swappy,
 ) -> Result<Option<String>, SwappyError> {
-    do_swap(args, swappy, false)
+    do_swap_create_mapping(args, swappy, false)
 }
 
-fn do_swap(
+fn do_swap_create_mapping(
     args: ArgMatches,
     swappy: &mut Swappy,
     reserved: bool,
@@ -88,13 +104,37 @@ fn do_swap(
     let bytes_u64 = bytes.as_u64();
     let bytes_usize = usize::try_from(bytes_u64)
         .map_err(|e| anyhow!("value too large: {}", e))?;
-    if reserved {
-        swappy.swap_reserve(bytes_usize)?;
+    let addr = if reserved {
+        swappy.swap_reserve(bytes_usize)?
     } else {
-        swappy.swap_noreserve(bytes_usize)?;
-    }
+        swappy.swap_noreserve(bytes_usize)?
+    };
+
+    let mut s = String::new();
+    s.push_str(&format!("new mapping: 0x{:x}\n\n", addr));
     let swapinfo = Swappy::swap_info().unwrap();
-    Ok(Some(swapinfo.format()))
+    s.push_str(&swapinfo.format());
+    s.push_str("\n\n");
+    s.push_str(&do_print_swap_mappings(swappy));
+    Ok(Some(s))
+}
+
+fn cmd_swap_touch(
+    args: ArgMatches,
+    swappy: &mut Swappy,
+) -> Result<Option<String>, SwappyError> {
+    let addr_str: &String = args.get_one("addr").unwrap();
+    let addr_usize: usize = parse_int::parse(addr_str)
+        .map_err(|e| anyhow!("parsing adr: {}", e))?;
+
+    let mut s = String::new();
+    if !swappy.swap_touch(addr_usize)? {
+        s.push_str("warning: pages were already touched\n");
+    }
+
+    let swapinfo = Swappy::swap_info().unwrap();
+    s.push_str(&swapinfo.format());
+    Ok(Some(s))
 }
 
 fn main() -> ReplResult<()> {
@@ -126,7 +166,14 @@ fn main() -> ReplResult<()> {
                 .arg(Arg::new("size").required(true))
                 .about("Create a new swap mapping with NORESERVE"),
             cmd_swap_noreserve,
+        )
+        .with_command(
+            Command::new("swap-touch")
+                .arg(Arg::new("addr").required(true))
+                .about("Touch pages in a swap mapping to allocate them"),
+            cmd_swap_touch,
         );
+
     repl.run()
 }
 
@@ -138,6 +185,7 @@ struct Mapping {
     addr: *mut libc::c_void,
     size: usize,
     reserved: bool,
+    allocated: bool,
 }
 
 impl Swappy {
@@ -158,7 +206,10 @@ impl Swappy {
     }
 
     // Create a swap mapping (using mmap)
-    pub fn swap_reserve(&mut self, bytes: usize) -> Result<(), anyhow::Error> {
+    pub fn swap_reserve(
+        &mut self,
+        bytes: usize,
+    ) -> Result<usize, anyhow::Error> {
         self.do_swap_map(bytes, true)
     }
 
@@ -166,7 +217,7 @@ impl Swappy {
     pub fn swap_noreserve(
         &mut self,
         bytes: usize,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<usize, anyhow::Error> {
         self.do_swap_map(bytes, false)
     }
 
@@ -174,7 +225,7 @@ impl Swappy {
         &mut self,
         size: usize,
         reserved: bool,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<usize, anyhow::Error> {
         let nullptr = std::ptr::null_mut();
         let prot = libc::PROT_READ | libc::PROT_WRITE;
         let baseflags = libc::MAP_ANON | libc::MAP_PRIVATE;
@@ -186,8 +237,28 @@ impl Swappy {
                 .context("mmap anon memory");
         }
 
-        self.mappings.push(Mapping { addr, size, reserved });
-        Ok(())
+        self.mappings.push(Mapping { addr, size, reserved, allocated: false });
+        Ok(addr as usize)
+    }
+
+    pub fn swap_touch(&mut self, addr: usize) -> Result<bool, anyhow::Error> {
+        let mut mapping = self
+            .mappings
+            .iter_mut()
+            .find(|m| m.addr as usize == addr)
+            .ok_or_else(|| anyhow!("no mapping with address 0x{:x}", addr))?;
+
+        let rv = !mapping.allocated;
+        mapping.allocated = true;
+
+        let start_addr = mapping.addr as usize;
+        let end_addr = mapping.addr as usize + mapping.size;
+        for page_addr in (start_addr..end_addr).step_by(PAGE_SIZE) {
+            let page_ptr: *mut u8 = page_addr as *mut u8;
+            unsafe { std::ptr::write(page_ptr, 1) };
+        }
+
+        Ok(rv)
     }
 
     // Runs mdb's ::memstat
@@ -255,11 +326,12 @@ impl AnonInfo {
         let total = self.ani_max * PAGE_SIZE;
 
         format!(
-            "allocated:  {:9} KiB  {:3.2} GiB\n\
-         reserved:   {:9} KiB  {:3.2} GiB\n\
-         used:       {:9} KiB  {:3.2} GiB\n\
-         available:  {:9} KiB  {:3.2} GiB\n\
-         total:      {:9} KiB  {:3.2} GiB",
+            "SWAP ACCOUNTING\n\
+         allocated:                  {:9} KiB  {:3.2} GiB\n\
+         reserved (not allocated):   {:9} KiB  {:3.2} GiB\n\
+         used:                       {:9} KiB  {:3.2} GiB\n\
+         available:                  {:9} KiB  {:3.2} GiB\n\
+         total:                      {:9} KiB  {:3.2} GiB",
             allocated / 1024,
             allocated / 1024 / 1024 / 1024,
             reserved / 1024,

@@ -1,8 +1,10 @@
 //! Interactive tool to mess around with swap and physical memory on illumos
 
+use anyhow::bail;
 use reedline_repl_rs::clap::{Arg, ArgMatches, Command};
 use reedline_repl_rs::Repl;
 use reedline_repl_rs::Result as ReplResult;
+use std::os::unix::process::ExitStatusExt;
 
 fn cmd_mappings(_args: ArgMatches, swappy: &mut Swappy) -> ReplResult<Option<String>> {
     Ok(Some(swappy.mappings.join(", ")))
@@ -15,12 +17,19 @@ fn cmd_add_mapping(args: ArgMatches, swappy: &mut Swappy) -> ReplResult<Option<S
     Ok(None)
 }
 
+fn cmd_memstat(_args: ArgMatches, _swappy: &mut Swappy) -> ReplResult<Option<String>> {
+    Ok(Some(Swappy::memstat().expect("memstat")))
+}
+
 fn cmd_swap_info(_args: ArgMatches, _swappy: &mut Swappy) -> ReplResult<Option<String>> {
     let swapinfo = Swappy::swap_info().unwrap();
+
+    // See doswap() in usr/src/cmd/swap/swap.c.
     let allocated = (swapinfo.ani_max - swapinfo.ani_free) * PAGE_SIZE;
     let reserved = (swapinfo.ani_resv * PAGE_SIZE) - allocated;
     let available = (swapinfo.ani_max - swapinfo.ani_resv) * PAGE_SIZE;
     let total = swapinfo.ani_max * PAGE_SIZE;
+
     Ok(Some(format!(
         "allocated:  {:9} KiB\n\
          reserved:   {:9} KiB\n\
@@ -49,6 +58,10 @@ fn main() -> ReplResult<()> {
                 .arg(Arg::new("label").required(true))
                 .about("Add a new mapping"),
             cmd_add_mapping,
+        )
+        .with_command(
+            Command::new("memstat").about("Show physical memory usage"),
+            cmd_memstat,
         )
         .with_command(
             Command::new("swap_info").about("Show swap accounting information"),
@@ -80,6 +93,41 @@ impl Swappy {
             0 => Ok(rv),
             _ => Err(std::io::Error::last_os_error()),
         }
+    }
+
+    fn memstat() -> Result<String, anyhow::Error> {
+        let cmd_output = std::process::Command::new("pfexec")
+            .arg("mdb")
+            .arg("-ke")
+            .arg("::memstat")
+            .output()
+            .expect("failed to run: `pfexec mdb -ke ::memstat`");
+        let stdout = String::from_utf8_lossy(&cmd_output.stdout);
+        let stderr = String::from_utf8_lossy(&cmd_output.stderr);
+        if !cmd_output.status.success() {
+            let (verb, noun, which) = if let Some(code) = cmd_output.status.code() {
+                ("exited", "status", code.to_string())
+            } else {
+                if let Some(signal) = cmd_output.status.signal() {
+                    ("terminated", "signal", signal.to_string())
+                } else {
+                    // This should not be possible.
+                    ("terminated", "signal", String::from("unknown"))
+                }
+            };
+
+            bail!(
+                "pfexec mdb -ke ::memstat: {} unexpectedly with {} {}: \
+                stdout:\n{}stderr:\n{}",
+                verb,
+                noun,
+                which,
+                stdout,
+                stderr,
+            );
+        }
+
+        Ok(stdout.to_string())
     }
 }
 

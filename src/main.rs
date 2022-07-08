@@ -14,6 +14,7 @@ use anyhow::Context;
 use reedline_repl_rs::clap::{Arg, ArgMatches, Command};
 use reedline_repl_rs::Repl;
 use reedline_repl_rs::Result as ReplResult;
+use std::fmt::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::str::FromStr;
 
@@ -62,19 +63,18 @@ fn cmd_swap_mappings(
 
 fn do_print_swap_mappings(swappy: &Swappy) -> String {
     let mut s = String::new();
-    s.push_str("SWAPPY-CREATED MAPPINGS\n");
-    s.push_str(&format!(
-        "{:18}  {:11}  {:9}  {}\n",
-        "ADDR", "SIZE (B)", "SIZE (GB)", ""
-    ));
+    writeln!(s, "SWAPPY-CREATED MAPPINGS").unwrap();
+    writeln!(s, "{:18}  {:11}  {:9}", "ADDR", "SIZE (B)", "SIZE (GB)").unwrap();
     for m in &swappy.mappings {
-        s.push_str(&format!(
-            "{:16p}  {:11}  {:6.2} {}\n",
+        writeln!(
+            s,
+            "{:16p}  {:11}  {:6.2} {}",
             m.addr,
             m.size,
             m.size / 1024 / 1024 / 1024,
             if m.reserved { "" } else { "NORESERVE" }
-        ));
+        )
+        .unwrap();
     }
     s
 }
@@ -99,7 +99,7 @@ fn do_swap_create_mapping(
     reserved: bool,
 ) -> Result<Option<String>, SwappyError> {
     let size_str: &String = args.get_one("size").unwrap();
-    let bytes = bytesize::ByteSize::from_str(&size_str)
+    let bytes = bytesize::ByteSize::from_str(size_str)
         .map_err(|e| anyhow!("parsing size: {}", e))?;
     let bytes_u64 = bytes.as_u64();
     let bytes_usize = usize::try_from(bytes_u64)
@@ -111,7 +111,7 @@ fn do_swap_create_mapping(
     };
 
     let mut s = String::new();
-    s.push_str(&format!("new mapping: 0x{:x}\n\n", addr));
+    write!(s, "new mapping: 0x{:x}\n\n", addr).unwrap();
     let swapinfo = Swappy::swap_info().unwrap();
     s.push_str(&swapinfo.format());
     s.push_str("\n\n");
@@ -275,13 +275,11 @@ impl Swappy {
             let (verb, noun, which) =
                 if let Some(code) = cmd_output.status.code() {
                     ("exited", "status", code.to_string())
+                } else if let Some(signal) = cmd_output.status.signal() {
+                    ("terminated", "signal", signal.to_string())
                 } else {
-                    if let Some(signal) = cmd_output.status.signal() {
-                        ("terminated", "signal", signal.to_string())
-                    } else {
-                        // This should not be possible.
-                        ("terminated", "signal", String::from("unknown"))
-                    }
+                    // This should not be possible.
+                    ("terminated", "signal", String::from("unknown"))
                 };
 
             bail!(

@@ -1,20 +1,43 @@
+//! Interactive tool to mess around with swap and physical memory on illumos
+
 use reedline_repl_rs::clap::{Arg, ArgMatches, Command};
 use reedline_repl_rs::{Repl, Result};
 
-/// Write "Hello" with given name
-fn hello<T>(args: ArgMatches, _context: &mut T) -> Result<Option<String>> {
-    Ok(Some(format!("Hello, {}", args.value_of("who").unwrap())))
+fn cmd_mappings(_args: ArgMatches, swappy: &mut Swappy) -> Result<Option<String>> {
+    Ok(Some(swappy.mappings.join(", ")))
+}
+
+fn cmd_add_mapping(args: ArgMatches, swappy: &mut Swappy) -> Result<Option<String>> {
+    swappy.mappings.push(args.value_of("label").unwrap().to_string());
+    Ok(None)
 }
 
 fn main() -> Result<()> {
-    let mut repl = Repl::new(())
+    let swappy = Swappy::new();
+    let mut repl = Repl::new(swappy)
         .with_name("swappy")
         .with_description("mess around with swap and physical memory")
         .with_command(
-            Command::new("hello")
-                .arg(Arg::new("who").required(true))
-                .about("Greetings!"),
-            hello,
+            Command::new("mappings").about("List mappings created"),
+            cmd_mappings,
+        )
+        .with_command(
+            Command::new("add_mapping")
+                .arg(Arg::new("label").required(true))
+                .about("Add a new mapping"),
+            cmd_add_mapping,
         );
     repl.run()
+}
+
+struct Swappy {
+    mappings: Vec<String>,
+}
+
+impl Swappy {
+    fn new() -> Swappy {
+        Swappy {
+            mappings: Vec::new(),
+        }
+    }
 }

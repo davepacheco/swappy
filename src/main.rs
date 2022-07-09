@@ -68,11 +68,12 @@ fn do_print_swap_mappings(swappy: &Swappy) -> String {
     for m in &swappy.mappings {
         writeln!(
             s,
-            "{:16p}  {:11}  {:6.2} {}",
+            "{:16p}  {:11}  {:6.2} {:9} {}",
             m.addr,
             m.size,
             m.size / 1024 / 1024 / 1024,
-            if m.reserved { "" } else { "NORESERVE" }
+            if m.reserved { "" } else { "NORESERVE" },
+            if m.allocated { "ALLOCATED" } else { "" },
         )
         .unwrap();
     }

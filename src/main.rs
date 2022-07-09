@@ -331,17 +331,7 @@ impl Swappy {
         // XXX How are you supposed to do this?  I want to hang this off of
         // `self.kstat` but I can't because update() consumes it.
         let kstat = kstat_rs::Ctl::new().expect("initializing kstat");
-        let mut filter =
-            kstat.filter(Some("unix"), Some(0), Some("system_pages"));
-        let mut kst = filter
-            .next()
-            .ok_or_else(|| anyhow!("found no system_pages kstats"))?;
-        if filter.next().is_some() {
-            bail!("found too many system_pages kstats");
-        }
-
-        let data = kstat.read(&mut kst).context("reading kstat")?;
-        PhysicalMemoryStats::from_kstat(&data)
+        kstat_read_physmem(&kstat)
     }
 
     // Timer subsystem
@@ -509,8 +499,12 @@ fn timer_thread(
         // on the channel until we're told to stop.  The only difference is that
         // we wait with a timeout.  If we hit the timeout, we fetch and print
         // stats and then try again.
-        // TODO Print a header row.
-        println!("<<timer header>>");
+
+        println!(
+            "{:5} {:10} {:9} {:10}",
+            "FREE", "SWAP_ALLOC", "SWAP_RESV", "SWAP_TOTAL"
+        );
+
         loop {
             match rx.recv_timeout(std::time::Duration::from_secs(1)) {
                 Err(RecvTimeoutError::Timeout) => timer_print(),
@@ -527,7 +521,55 @@ fn timer_thread(
     }
 }
 
+fn kstat_read_physmem(
+    kstat: &kstat_rs::Ctl,
+) -> Result<PhysicalMemoryStats, anyhow::Error> {
+    let mut filter = kstat.filter(Some("unix"), Some(0), Some("system_pages"));
+    let mut kst =
+        filter.next().ok_or_else(|| anyhow!("found no system_pages kstats"))?;
+    if filter.next().is_some() {
+        bail!("found too many system_pages kstats");
+    }
+
+    let data = kstat.read(&mut kst).context("reading kstat")?;
+    PhysicalMemoryStats::from_kstat(&data)
+}
+
 fn timer_print() {
+    if let Err(error) = timer_print_stats().context("timer_print()") {
+        eprintln!("warning: {:#}", error);
+    }
+}
+
+fn timer_print_stats() -> Result<(), anyhow::Error> {
+    let kstat = kstat_rs::Ctl::new().context("initializing kstat")?;
+    let physmem = kstat_read_physmem(&kstat).context("kstat_read_physmem")?;
+    // TODO refactor -- we use global funcs and associated funcs on Swappy.  We
+    // should have one set of functions.  Also, we may just want to have all the
+    // stat stuff happen in this background thread, changing the main thing to
+    // just use channels to send requests for data.  It'd be cleaner in some
+    // sense, but it's also not that bad to have multiple kstat readers.
+    let swapinfo = Swappy::swap_info().context("swap_info")?;
+
+    // TODO add kmem reap, arc reap, pageout activity
+
     // TODO
-    println!("<<timer row>>");
+    let free_gib = (physmem.freemem as usize * PAGE_SIZE) as f64
+        / 1024.0
+        / 1024.0
+        / 1024.0;
+    // TODO copied from above
+    let swap_allocated = (swapinfo.ani_max - swapinfo.ani_free) * PAGE_SIZE;
+    let swap_reserved = (swapinfo.ani_resv * PAGE_SIZE) - swap_allocated;
+    let _swap_available = (swapinfo.ani_max - swapinfo.ani_resv) * PAGE_SIZE;
+    let swap_total = swapinfo.ani_max * PAGE_SIZE;
+    println!(
+        "{:5.1} {:10.1} {:9.1} {:10.1}",
+        free_gib,
+        swap_allocated as f64 / 1024.0 / 1024.0 / 1024.0,
+        swap_reserved as f64 / 1024.0 / 1024.0 / 1024.0,
+        swap_total as f64 / 1024.0 / 1024.0 / 1024.0
+    );
+
+    Ok(())
 }

@@ -2,6 +2,7 @@
 
 // TODO next ideas:
 // - better describe what "used" and "available" are
+// - add a command to remove swap mappings
 // - play around with some real examples to validate how I think this works
 // - print out more kstats:
 //   - swap allocation failures
@@ -17,6 +18,7 @@ use reedline_repl_rs::Result as ReplResult;
 use std::fmt::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::str::FromStr;
+use std::sync::mpsc::RecvTimeoutError;
 
 #[derive(Debug)]
 struct SwappyError(anyhow::Error);
@@ -153,6 +155,7 @@ fn main() -> ReplResult<()> {
     let mut repl = Repl::new(swappy)
         .with_name("swappy")
         .with_description("mess around with swap and physical memory")
+        .with_partial_completions(false)
         .with_command(
             Command::new("memstat").about("Show physical memory usage"),
             cmd_memstat,
@@ -195,6 +198,8 @@ fn main() -> ReplResult<()> {
 
 struct Swappy {
     mappings: Vec<Mapping>,
+    timer_thread: std::thread::JoinHandle<Result<(), anyhow::Error>>,
+    timer_tx: std::sync::mpsc::SyncSender<TimerMessage>,
 }
 
 struct Mapping {
@@ -206,7 +211,12 @@ struct Mapping {
 
 impl Swappy {
     pub fn new() -> Swappy {
-        Swappy { mappings: Vec::new() }
+        let (timer_tx, timer_rx) = std::sync::mpsc::sync_channel(4);
+        Swappy {
+            mappings: Vec::new(),
+            timer_thread: std::thread::spawn(move || timer_thread(timer_rx)),
+            timer_tx,
+        }
     }
 
     // Summary swap stats (like `swap -s`)
@@ -269,10 +279,14 @@ impl Swappy {
 
         let start_addr = mapping.addr as usize;
         let end_addr = mapping.addr as usize + mapping.size;
+        self.enable_timer();
+
         for page_addr in (start_addr..end_addr).step_by(PAGE_SIZE) {
             let page_ptr: *mut u8 = page_addr as *mut u8;
             unsafe { std::ptr::write(page_ptr, 1) };
         }
+
+        self.disable_timer();
 
         Ok(rv)
     }
@@ -329,6 +343,36 @@ impl Swappy {
         let data = kstat.read(&mut kst).context("reading kstat")?;
         PhysicalMemoryStats::from_kstat(&data)
     }
+
+    // Timer subsystem
+    //
+    // Functions that expect to take a while and cause interesting effects on
+    // the system can call enable_timer() to print summary stats once per
+    // second.  They call disable_timer() to print one more stat and stop the
+    // timer.
+    pub fn enable_timer(&self) {
+        if let Err(error) = self.timer_tx.send(TimerMessage::StartStats) {
+            // This is likely that the other thread panicked.
+            eprintln!("warning: failed to enable timer: {:#}", error);
+        }
+    }
+
+    pub fn disable_timer(&self) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        if let Err(error) = self.timer_tx.send(TimerMessage::StopStats(tx)) {
+            // This is likely that the other thread panicked.
+            eprintln!("warning: failed to disable timer: {:#}", error);
+        }
+        if let Err(error) = rx.recv() {
+            // This is likely that the other thread panicked.
+            eprintln!("warning: failed to wait for timer: {:#}", error);
+        }
+    }
+}
+
+enum TimerMessage {
+    StartStats,
+    StopStats(std::sync::mpsc::SyncSender<()>),
 }
 
 const PAGE_SIZE: usize = 4096;
@@ -434,7 +478,7 @@ impl PhysicalMemoryStats {
                 bail!("duplicate value for kstat named {:?}", nst.name);
             }
 
-            let value = kstat_value_u64(&nst)?;
+            let value = kstat_value_u64(nst)?;
             *which_value = Some(value);
         }
 
@@ -449,4 +493,41 @@ impl PhysicalMemoryStats {
             minfree: minfree.ok_or_else(|| anyhow!("missing stat minfree"))?,
         })
     }
+}
+
+fn timer_thread(
+    rx: std::sync::mpsc::Receiver<TimerMessage>,
+) -> Result<(), anyhow::Error> {
+    loop {
+        // Wait indefinitely to be told to start the timer.
+        match rx.recv().context("waiting for StartTimer")? {
+            TimerMessage::StopStats(_) => panic!("stats already stopped"),
+            TimerMessage::StartStats => (),
+        }
+
+        // Now we're in timer mode.  Print a header row.  Then we'll wait again
+        // on the channel until we're told to stop.  The only difference is that
+        // we wait with a timeout.  If we hit the timeout, we fetch and print
+        // stats and then try again.
+        // TODO Print a header row.
+        println!("<<timer header>>");
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                Err(RecvTimeoutError::Timeout) => timer_print(),
+                Err(error) => {
+                    return Err(error).context("waiting for StopTimer")
+                }
+                Ok(TimerMessage::StartStats) => panic!("stats already started"),
+                Ok(TimerMessage::StopStats(tx)) => {
+                    tx.send(()).context("confirming StopStats")?;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn timer_print() {
+    // TODO
+    println!("<<timer row>>");
 }

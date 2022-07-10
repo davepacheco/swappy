@@ -134,10 +134,10 @@ fn do_print_swap_mappings(swappy: &Swappy) -> String {
         let size = m.size();
         writeln!(
             s,
-            "{:16p}  {:11}  {:>10} {:9} {}",
+            "{:16p}  {:11}  {:10} {:9} {}",
             m.addr,
             size.as_u64(),
-            ByteSizeDisplayGiB(size).to_string(),
+            ByteSizeDisplayGiB(size),
             if m.reserved { "" } else { "NORESERVE" },
             if m.allocated { "ALLOCATED" } else { "" },
         )

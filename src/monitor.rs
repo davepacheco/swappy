@@ -131,11 +131,11 @@ fn monitor_print_stats() -> Result<(), anyhow::Error> {
     // TODO add kmem reap, arc reap, pageout activity
 
     println!(
-        "{:>5} {:>10} {:>9} {:>10}",
-        ByteSizeDisplayGiB(physmem.freemem).to_string(),
-        ByteSizeDisplayGiB(swapinfo.allocated()).to_string(),
-        ByteSizeDisplayGiB(swapinfo.reserved()).to_string(),
-        ByteSizeDisplayGiB(swapinfo.total()).to_string(),
+        "{:5} {:10} {:9} {:10}",
+        ByteSizeDisplayGiB(physmem.freemem),
+        ByteSizeDisplayGiB(swapinfo.allocated()),
+        ByteSizeDisplayGiB(swapinfo.reserved()),
+        ByteSizeDisplayGiB(swapinfo.total()),
     );
 
     Ok(())

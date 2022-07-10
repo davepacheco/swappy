@@ -8,7 +8,11 @@ pub struct ByteSizeDisplayGiB(pub ByteSize);
 impl Display for ByteSizeDisplayGiB {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let as_gib = (self.0.as_u64() as f64) / (bytesize::GIB as f64);
-        f.write_fmt(format_args!("{:5.1}", as_gib))
+        if let Some(width) = f.width() {
+            f.write_fmt(format_args!("{:width$.1}", as_gib, width = width))
+        } else {
+            f.write_fmt(format_args!("{:.1}", as_gib))
+        }
     }
 }
 
@@ -17,6 +21,10 @@ pub struct ByteSizeDisplayKiB(pub ByteSize);
 impl Display for ByteSizeDisplayKiB {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let as_kib = (self.0.as_u64()) / bytesize::KIB;
-        f.write_fmt(format_args!("{:9}", as_kib))
+        if let Some(width) = f.width() {
+            f.write_fmt(format_args!("{:width$.1}", as_kib, width = width))
+        } else {
+            f.write_fmt(format_args!("{}", as_kib))
+        }
     }
 }

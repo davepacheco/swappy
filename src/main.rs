@@ -1,7 +1,6 @@
 //! Interactive tool to mess around with swap and physical memory on illumos
 
 // TODO next ideas:
-// - better describe what swap "used" and "available" are
 // - add commands:
 //   - hoover up memory for ARC
 //     - manage file
@@ -17,9 +16,6 @@
 //   - swap allocation failures
 //   - memory values: availrmem, freemem, etc.
 //   - pageout activity?
-// - spawn mdb up front and just write ::memstat and read output when we want to
-//   get the stats.  This will avoid forking a child process while we have huge
-//   mappings.
 
 use anyhow::anyhow;
 use anyhow::Context;

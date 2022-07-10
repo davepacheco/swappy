@@ -1,8 +1,10 @@
 //! kstat helper functions and types
 
+use crate::PAGE_SIZE;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
+use bytesize::ByteSize;
 
 pub fn kstat_read_physmem(
     kstat: &kstat_rs::Ctl,
@@ -20,7 +22,7 @@ pub fn kstat_read_physmem(
 
 #[derive(Debug)]
 pub struct PhysicalMemoryStats {
-    pub freemem: u64,
+    pub freemem: ByteSize,
     physmem: u64,
     availrmem: u64,
     lotsfree: u64,
@@ -66,7 +68,10 @@ impl PhysicalMemoryStats {
 
         Ok(PhysicalMemoryStats {
             physmem: physmem.ok_or_else(|| anyhow!("missing stat physmem"))?,
-            freemem: freemem.ok_or_else(|| anyhow!("missing stat freemem"))?,
+            freemem: ByteSize::b(
+                freemem.ok_or_else(|| anyhow!("missing stat freemem"))?
+                    * (PAGE_SIZE as u64),
+            ),
             availrmem: availrmem
                 .ok_or_else(|| anyhow!("missing stat availrmem"))?,
             lotsfree: lotsfree

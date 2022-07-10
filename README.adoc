@@ -1,0 +1,93 @@
+:showtitle:
+:toc: left
+:icons: font
+
+= Swappy
+
+Swappy is a very work-in-progress tool for exploring illumos system behavior related to physical memory usage and swap space.  Swappy provides a REPL (a shell-like environment) where you can create, remove, and touch swap mappings.  You can also print stats about physical memory and swap usage.
+
+== Quick demo
+
+Let's start by printing the initial swap summary stats:
+
+[source,text]
+----
+swappy〉swap-info                                              07/09/2022 09:53:41 PM
+SWAP ACCOUNTING
+total (available + used):        103634904 KiB   98.8 GiB
+    available:                   102693192 KiB   97.9 GiB
+    used (reserved + allocated):    941712 KiB    0.9 GiB
+        reserved, unallocated:       75796 KiB    0.1 GiB
+        allocated:                  865916 KiB    0.8 GiB
+
+----
+
+Now let's create a 10 GiB swap reservation.  This just uses `mmap(2)` to create a 10 GiB mapping of anonymous memory:
+
+[source,text]
+----
+swappy〉swap-reserve 10gib
+new mapping: 0xfffffc7d40000000
+
+SWAP ACCOUNTING
+total (available + used):        103634924 KiB   98.8 GiB
+    available:                    92207464 KiB   87.9 GiB
+    used (reserved + allocated):  11427460 KiB   10.9 GiB
+        reserved, unallocated:    10561552 KiB   10.1 GiB
+        allocated:                  865908 KiB    0.8 GiB
+
+
+SWAPPY-CREATED MAPPINGS
+ADDR                SIZE (B)     SIZE (GiB)
+0xfffffc7d40000000  10737418240        10.0
+----
+
+We can see that:
+
+- reserved, unallocated swap has increased by 10 GiB (by "unallocated" we mean that the physical pages have not been allocated yet)
+- available swap was reduced by 10 GiB
+- total swap size didn't change
+
+We can also create a NORESERVE mapping:
+
+[source,text]
+----
+swappy〉swap-reserve 10gib                                     07/09/2022 09:53:46 PM
+new mapping: 0xfffffc7d40000000
+
+SWAP ACCOUNTING
+total (available + used):        103634904 KiB   98.8 GiB
+    available:                    92207432 KiB   87.9 GiB
+    used (reserved + allocated):  11427472 KiB   10.9 GiB
+        reserved, unallocated:    10561548 KiB   10.1 GiB
+        allocated:                  865924 KiB    0.8 GiB
+
+
+SWAPPY-CREATED MAPPINGS
+ADDR                SIZE (B)     SIZE (GiB)
+0xfffffc7d40000000  10737418240        10.0
+
+----
+
+We can see here that none of the swap accounting has changed -- as the name suggests, NORESERVE mappings don't reserve any swap space.
+
+We can force each page of a mapping to be allocated by touching each of them.  This process took five seconds on my system, and swappy prints out a one-line summary of the swap stats while this is going on:
+
+[source,text]
+----
+swappy〉swap-touch 0xfffffc7d40000000                          07/09/2022 09:53:58 PM
+FREE  SWAP_ALLOC SWAP_RESV SWAP_TOTAL
+ 40.3        2.7       8.2       98.8
+ 38.4        4.6       6.3       98.8
+ 36.5        6.5       4.4       98.8
+ 34.6        8.4       2.5       98.8
+ 32.8       10.2       0.7       98.8
+SWAP ACCOUNTING
+total (available + used):        103614384 KiB   98.8 GiB
+    available:                    92186376 KiB   87.9 GiB
+    used (reserved + allocated):  11428008 KiB   10.9 GiB
+        reserved, unallocated:       75824 KiB    0.1 GiB
+        allocated:                11352184 KiB   10.8 GiB
+----
+
+We can see that we slowly transitioned swap space from "reserved, unallocated" to "allocated".  Total space didn't change.  The system's free memory decreased by 10 GiB as well, since those pages are no longer free.

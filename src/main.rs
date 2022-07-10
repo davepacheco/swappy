@@ -233,8 +233,8 @@ fn main() -> ReplResult<()> {
 
 struct Swappy {
     mappings: Vec<Mapping>,
-    timer_thread: std::thread::JoinHandle<Result<(), anyhow::Error>>,
-    timer_tx: std::sync::mpsc::SyncSender<TimerMessage>,
+    monitor_thread: std::thread::JoinHandle<Result<(), anyhow::Error>>,
+    monitor_tx: std::sync::mpsc::SyncSender<MonitorMessage>,
 }
 
 struct Mapping {
@@ -246,11 +246,11 @@ struct Mapping {
 
 impl Swappy {
     pub fn new() -> Swappy {
-        let (timer_tx, timer_rx) = std::sync::mpsc::sync_channel(4);
+        let (monitor_tx, monitor_rx) = std::sync::mpsc::sync_channel(4);
         Swappy {
             mappings: Vec::new(),
-            timer_thread: std::thread::spawn(move || timer_thread(timer_rx)),
-            timer_tx,
+            monitor_thread: std::thread::spawn(move || monitor_thread(monitor_rx)),
+            monitor_tx,
         }
     }
 
@@ -312,12 +312,12 @@ impl Swappy {
         let (addr, size, allocated) =
             (mapping.addr, mapping.size, mapping.allocated);
         if allocated {
-            self.enable_timer();
+            self.enable_monitor();
         }
         let rv = unsafe { libc::munmap(addr, size) };
         let error = std::io::Error::last_os_error();
         if allocated {
-            self.disable_timer();
+            self.disable_monitor();
         }
 
         if rv != 0 {
@@ -340,14 +340,14 @@ impl Swappy {
 
         let start_addr = mapping.addr as usize;
         let end_addr = mapping.addr as usize + mapping.size;
-        self.enable_timer();
+        self.enable_monitor();
 
         for page_addr in (start_addr..end_addr).step_by(PAGE_SIZE) {
             let page_ptr: *mut u8 = page_addr as *mut u8;
             unsafe { std::ptr::write(page_ptr, 1) };
         }
 
-        self.disable_timer();
+        self.disable_monitor();
 
         Ok(rv)
     }
@@ -395,33 +395,33 @@ impl Swappy {
         kstat_read_physmem(&kstat)
     }
 
-    // Timer subsystem
+    // Monitor subsystem
     //
     // Functions that expect to take a while and cause interesting effects on
-    // the system can call enable_timer() to print summary stats once per
-    // second.  They call disable_timer() to print one more stat and stop the
-    // timer.
-    pub fn enable_timer(&self) {
-        if let Err(error) = self.timer_tx.send(TimerMessage::StartStats) {
+    // the system can call enable_monitor() to print summary stats once per
+    // second.  They call disable_monitor() to print one more stat and stop the
+    // monitor.
+    pub fn enable_monitor(&self) {
+        if let Err(error) = self.monitor_tx.send(MonitorMessage::StartStats) {
             // This is likely that the other thread panicked.
-            eprintln!("warning: failed to enable timer: {:#}", error);
+            eprintln!("warning: failed to enable monitor: {:#}", error);
         }
     }
 
-    pub fn disable_timer(&self) {
+    pub fn disable_monitor(&self) {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        if let Err(error) = self.timer_tx.send(TimerMessage::StopStats(tx)) {
+        if let Err(error) = self.monitor_tx.send(MonitorMessage::StopStats(tx)) {
             // This is likely that the other thread panicked.
-            eprintln!("warning: failed to disable timer: {:#}", error);
+            eprintln!("warning: failed to disable monitor: {:#}", error);
         }
         if let Err(error) = rx.recv() {
             // This is likely that the other thread panicked.
-            eprintln!("warning: failed to wait for timer: {:#}", error);
+            eprintln!("warning: failed to wait for monitor: {:#}", error);
         }
     }
 }
 
-enum TimerMessage {
+enum MonitorMessage {
     StartStats,
     StopStats(std::sync::mpsc::SyncSender<()>),
 }
@@ -546,20 +546,20 @@ impl PhysicalMemoryStats {
     }
 }
 
-fn timer_thread(
-    rx: std::sync::mpsc::Receiver<TimerMessage>,
+fn monitor_thread(
+    rx: std::sync::mpsc::Receiver<MonitorMessage>,
 ) -> Result<(), anyhow::Error> {
     loop {
-        // Wait indefinitely to be told to start the timer.
-        match rx.recv().context("waiting for StartTimer")? {
-            TimerMessage::StopStats(_) => panic!("stats already stopped"),
-            TimerMessage::StartStats => (),
+        // Wait indefinitely to be told to start monitoring.
+        match rx.recv().context("waiting for StartStats")? {
+            MonitorMessage::StopStats(_) => panic!("stats already stopped"),
+            MonitorMessage::StartStats => (),
         }
 
-        // Now we're in timer mode.  Print a header row.  Then we'll wait again
-        // on the channel until we're told to stop.  The only difference is that
-        // we wait with a timeout.  If we hit the timeout, we fetch and print
-        // stats and then try again.
+        // Now we're in monitor mode.  Print a header row.  Then we'll wait
+        // again on the channel until we're told to stop.  The only difference
+        // is that we wait with a timeout.  If we hit the timeout, we fetch and
+        // print stats and then try again.
 
         println!(
             "{:5} {:10} {:9} {:10}",
@@ -568,12 +568,12 @@ fn timer_thread(
 
         loop {
             match rx.recv_timeout(std::time::Duration::from_secs(1)) {
-                Err(RecvTimeoutError::Timeout) => timer_print(),
+                Err(RecvTimeoutError::Timeout) => monitor_print(),
                 Err(error) => {
-                    return Err(error).context("waiting for StopTimer")
+                    return Err(error).context("waiting for StopStats")
                 }
-                Ok(TimerMessage::StartStats) => panic!("stats already started"),
-                Ok(TimerMessage::StopStats(tx)) => {
+                Ok(MonitorMessage::StartStats) => panic!("stats already started"),
+                Ok(MonitorMessage::StopStats(tx)) => {
                     tx.send(()).context("confirming StopStats")?;
                     break;
                 }
@@ -596,13 +596,13 @@ fn kstat_read_physmem(
     PhysicalMemoryStats::from_kstat(&data)
 }
 
-fn timer_print() {
-    if let Err(error) = timer_print_stats().context("timer_print()") {
+fn monitor_print() {
+    if let Err(error) = monitor_print_stats().context("monitor_print()") {
         eprintln!("warning: {:#}", error);
     }
 }
 
-fn timer_print_stats() -> Result<(), anyhow::Error> {
+fn monitor_print_stats() -> Result<(), anyhow::Error> {
     let kstat = kstat_rs::Ctl::new().context("initializing kstat")?;
     let physmem = kstat_read_physmem(&kstat).context("kstat_read_physmem")?;
     // TODO refactor -- we use global funcs and associated funcs on Swappy.  We

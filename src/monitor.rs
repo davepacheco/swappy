@@ -20,6 +20,8 @@ pub struct Monitor {
 }
 
 impl Monitor {
+    /// Starts a background thread for monitoring and returns a [`Monitor`]
+    /// handle that can be used to turn monitoring on or off
     pub fn new() -> Monitor {
         let (monitor_tx, monitor_rx) = std::sync::mpsc::sync_channel(4);
         Monitor {
@@ -30,6 +32,10 @@ impl Monitor {
         }
     }
 
+    /// Enable monitoring
+    ///
+    /// This causes the background thread to start collecting and printing stats
+    /// once per second.
     pub fn enable(&self) {
         if let Err(error) = self.monitor_tx.send(MonitorMessage::StartStats) {
             // This is likely that the other thread panicked.
@@ -37,7 +43,17 @@ impl Monitor {
         }
     }
 
+    /// Disable monitoring
+    ///
+    /// This causes the background thread to stop collecting and printing stats.
+    /// When this function returns, no more stats will be printed.
     pub fn disable(&self) {
+        // Create a channel (functioning as a oneshot) for the monitor thread to
+        // let us know when it's done.  We'll wait for the response.  If we
+        // didn't do this, then it's possible that one last stat line would be
+        // printed after we return.  For the user, this would be an annoying
+        // virtual artifact where they got a prompt, then got a bunch of extra
+        // output.
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         if let Err(error) = self.monitor_tx.send(MonitorMessage::StopStats(tx))
         {

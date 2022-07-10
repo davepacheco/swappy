@@ -1,6 +1,6 @@
 //! Monitor subsystem
 //!
-//: Functions that expect to take a while and cause interesting effects on the
+//! Functions that expect to take a while and cause interesting effects on the
 //! system can enable the monitor to print stats once / second and disable the
 //! monitor to stop printing stats.
 

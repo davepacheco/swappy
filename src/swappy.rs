@@ -10,6 +10,11 @@ use anyhow::Context;
 use bytesize::ByteSize;
 use std::os::unix::process::ExitStatusExt;
 
+/// Encapsulates the work kicked off by the REPL
+///
+/// This struct stores the global state of the program and provides interfaces
+/// for manipulating and inspecting it.  Currently, that's mostly the list of
+/// anonymous mappings that have been created.
 pub struct Swappy {
     mappings: Vec<Mapping>,
     monitor: Monitor,
@@ -20,17 +25,17 @@ impl Swappy {
         Swappy { mappings: Vec::new(), monitor: Monitor::new() }
     }
 
-    // Summary swap stats (like `swap -s`)
+    /// Returns summary swap accounting stats (like `swap -s`)
     pub fn swap_info() -> Result<AnonInfo, anyhow::Error> {
         AnonInfo::fetch()
     }
 
-    // Iterate mappings created by swappy
+    /// Iterate mappings created by the user
     pub fn mappings(&self) -> impl std::iter::Iterator<Item = &Mapping> {
         self.mappings.iter()
     }
 
-    // Create a swap mapping (using mmap)
+    /// Create a swap mapping (using mmap), returning the address
     pub fn swap_reserve(
         &mut self,
         bytes: usize,
@@ -38,7 +43,7 @@ impl Swappy {
         self.do_swap_map(bytes, true)
     }
 
-    // Create a NORESERVE swap mapping (using mmap)
+    /// Create a NORESERVE swap mapping (using mmap), returning the address
     pub fn swap_noreserve(
         &mut self,
         bytes: usize,
@@ -66,6 +71,7 @@ impl Swappy {
         Ok(addr as usize)
     }
 
+    /// Remove a swap mapping identified by address
     pub fn swap_rm(&mut self, addr: usize) -> Result<(), anyhow::Error> {
         let mapping = self
             .mappings
@@ -92,6 +98,7 @@ impl Swappy {
         Ok(())
     }
 
+    /// Touch all pages in a swap mapping (in order to allocate them)
     pub fn swap_touch(&mut self, addr: usize) -> Result<bool, anyhow::Error> {
         let mut mapping = self
             .mappings
@@ -116,7 +123,16 @@ impl Swappy {
         Ok(rv)
     }
 
-    // Runs mdb's ::memstat
+    /// Run mdb's ::memstat to print a summary of physical memory usage by
+    /// kernel consumer
+    // TODO we should parse this and provide a better summary
+    // TODO we should fork mdb _once_ at startup, then issue it commands and
+    // read the responses.  The problem with forking here is that we may have a
+    // lot of large swap mappings.  The child will need reservations for all
+    // that even though it's going to exec.  We could also use the double-fork
+    // pattern (fork a child at startup that's used to fork other processes
+    // later) but that's more complicated than just forking one mdb and issuing
+    // it commands.
     pub fn memstat() -> Result<String, anyhow::Error> {
         let cmd_output = std::process::Command::new("pfexec")
             .arg("mdb")
@@ -151,23 +167,36 @@ impl Swappy {
         Ok(stdout.to_string())
     }
 
-    // Fetches various memory-related kstats
+    /// Fetch various memory-related kstats
     pub fn kstat_read(&mut self) -> Result<PhysicalMemoryStats, anyhow::Error> {
-        // XXX How are you supposed to do this?  I want to hang this off of
-        // `self.kstat` but I can't because update() consumes it.
+        // TODO How are you supposed to do this?  I want to hang the `kstat_ctl`
+        // off of `self.kstat` but I can't because update() consumes it.
         let kstat = kstat_rs::Ctl::new().expect("initializing kstat");
         kstat_read_physmem(&kstat)
     }
 }
 
+/// Describes one user-created swap mapping
 pub struct Mapping {
+    /// the address of the mapping
+    ///
+    /// This is only useful for passing to [`Swappy::swap_touch()`] and
+    /// [`Swappy::swap_rm()`].
     pub addr: *mut libc::c_void,
+
+    /// the size of the mapping --see [`Mapping::size()`] instead
     size: usize,
+
+    /// whether the user requested that the mapping reserve swap space
     pub reserved: bool,
+
+    /// whether the pages in this mapping have been touched using
+    /// [`Swappy::swap_touch()`]
     pub allocated: bool,
 }
 
 impl Mapping {
+    /// Returns the size of the mapping
     pub fn size(&self) -> ByteSize {
         ByteSize::b(u64::try_from(self.size).unwrap())
     }

@@ -128,15 +128,15 @@ fn cmd_swap_mappings(
 fn do_print_swap_mappings(swappy: &Swappy) -> String {
     let mut s = String::new();
     writeln!(s, "SWAPPY-CREATED MAPPINGS").unwrap();
-    writeln!(s, "{:18}  {:11}  {:9}", "ADDR", "SIZE (B)", "SIZE (GB)").unwrap();
+    writeln!(s, "{:18}  {:11}  {:9}", "ADDR", "SIZE (B)", "SIZE (GiB)").unwrap();
     for m in swappy.mappings() {
         let size = m.size();
         writeln!(
             s,
-            "{:16p}  {:11}  {:9.1} {:9} {}",
+            "{:16p}  {:11}  {:>10} {:9} {}",
             m.addr,
-            size,
-            ByteSizeDisplayGiB(size),
+            size.as_u64(),
+            ByteSizeDisplayGiB(size).to_string(),
             if m.reserved { "" } else { "NORESERVE" },
             if m.allocated { "ALLOCATED" } else { "" },
         )

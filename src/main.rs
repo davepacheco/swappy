@@ -22,15 +22,65 @@
 //   mappings.
 
 use anyhow::anyhow;
-use anyhow::bail;
 use anyhow::Context;
 use reedline_repl_rs::clap::{Arg, ArgMatches, Command};
 use reedline_repl_rs::Repl;
-use reedline_repl_rs::Result as ReplResult;
 use std::fmt::Write;
 use std::str::FromStr;
-use swappy::swappy::Swappy;
 use swappy::bytesize_display::ByteSizeDisplayGiB;
+use swappy::swappy::Swappy;
+
+fn main() -> reedline_repl_rs::Result<()> {
+    let swappy = Swappy::new();
+    let mut repl = Repl::new(swappy)
+        .with_name("swappy")
+        .with_description("mess around with swap and physical memory")
+        .with_partial_completions(false)
+        .with_command(
+            Command::new("memstat").about("Show physical memory usage"),
+            cmd_memstat,
+        )
+        .with_command(
+            Command::new("swap-info").about("Show swap accounting information"),
+            cmd_swap_info,
+        )
+        .with_command(
+            Command::new("swap-mappings")
+                .about("Show mappings created by swappy"),
+            cmd_swap_mappings,
+        )
+        .with_command(
+            Command::new("swap-reserve")
+                .arg(Arg::new("size").required(true))
+                .about("Create a new swap mapping"),
+            cmd_swap_reserve,
+        )
+        .with_command(
+            Command::new("swap-noreserve")
+                .arg(Arg::new("size").required(true))
+                .about("Create a new swap mapping with NORESERVE"),
+            cmd_swap_noreserve,
+        )
+        .with_command(
+            Command::new("swap-rm")
+                .arg(Arg::new("addr").required(true))
+                .about("Remove a swap mapping"),
+            cmd_swap_rm,
+        )
+        .with_command(
+            Command::new("swap-touch")
+                .arg(Arg::new("addr").required(true))
+                .about("Touch pages in a swap mapping to allocate them"),
+            cmd_swap_touch,
+        )
+        .with_command(
+            Command::new("kstat-dump")
+                .about("Dump various kstats of potential interest"),
+            cmd_kstat_dump,
+        );
+
+    repl.run()
+}
 
 #[derive(Debug)]
 struct SwappyError(anyhow::Error);
@@ -65,7 +115,7 @@ fn cmd_swap_info(
     _swappy: &mut Swappy,
 ) -> Result<Option<String>, SwappyError> {
     let swapinfo = Swappy::swap_info()?;
-    Ok(Some(swapinfo.format()))
+    Ok(Some(swapinfo.display().to_string()))
 }
 
 fn cmd_swap_mappings(
@@ -130,7 +180,7 @@ fn do_swap_create_mapping(
     let mut s = String::new();
     write!(s, "new mapping: 0x{:x}\n\n", addr).unwrap();
     let swapinfo = Swappy::swap_info()?;
-    s.push_str(&swapinfo.format());
+    write!(s, "{}", swapinfo.display()).unwrap();
     s.push_str("\n\n");
     s.push_str(&do_print_swap_mappings(swappy));
     Ok(Some(s))
@@ -148,7 +198,7 @@ fn cmd_swap_rm(
     swappy.swap_rm(addr_usize)?;
 
     let swapinfo = Swappy::swap_info()?;
-    Ok(Some(swapinfo.format()))
+    Ok(Some(swapinfo.display().to_string()))
 }
 
 fn cmd_swap_touch(
@@ -166,7 +216,7 @@ fn cmd_swap_touch(
     }
 
     let swapinfo = Swappy::swap_info()?;
-    s.push_str(&swapinfo.format());
+    write!(s, "{}", swapinfo.display()).unwrap();
     Ok(Some(s))
 }
 
@@ -178,56 +228,4 @@ fn cmd_kstat_dump(
     let mut s = String::new();
     write!(s, "{:?}", physmem).unwrap();
     Ok(Some(s))
-}
-
-fn main() -> ReplResult<()> {
-    let swappy = Swappy::new();
-    let mut repl = Repl::new(swappy)
-        .with_name("swappy")
-        .with_description("mess around with swap and physical memory")
-        .with_partial_completions(false)
-        .with_command(
-            Command::new("memstat").about("Show physical memory usage"),
-            cmd_memstat,
-        )
-        .with_command(
-            Command::new("swap-info").about("Show swap accounting information"),
-            cmd_swap_info,
-        )
-        .with_command(
-            Command::new("swap-mappings")
-                .about("Show mappings created by swappy"),
-            cmd_swap_mappings,
-        )
-        .with_command(
-            Command::new("swap-reserve")
-                .arg(Arg::new("size").required(true))
-                .about("Create a new swap mapping"),
-            cmd_swap_reserve,
-        )
-        .with_command(
-            Command::new("swap-noreserve")
-                .arg(Arg::new("size").required(true))
-                .about("Create a new swap mapping with NORESERVE"),
-            cmd_swap_noreserve,
-        )
-        .with_command(
-            Command::new("swap-rm")
-                .arg(Arg::new("addr").required(true))
-                .about("Remove a swap mapping"),
-            cmd_swap_rm,
-        )
-        .with_command(
-            Command::new("swap-touch")
-                .arg(Arg::new("addr").required(true))
-                .about("Touch pages in a swap mapping to allocate them"),
-            cmd_swap_touch,
-        )
-        .with_command(
-            Command::new("kstat-dump")
-                .about("Dump various kstats of potential interest"),
-            cmd_kstat_dump,
-        );
-
-    repl.run()
 }

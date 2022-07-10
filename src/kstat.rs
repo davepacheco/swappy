@@ -6,6 +6,7 @@ use anyhow::bail;
 use anyhow::Context;
 use bytesize::ByteSize;
 
+/// Reads kstats about physical memory using the given `kstat` handle
 pub fn kstat_read_physmem(
     kstat: &kstat_rs::Ctl,
 ) -> Result<PhysicalMemoryStats, anyhow::Error> {
@@ -21,6 +22,7 @@ pub fn kstat_read_physmem(
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct PhysicalMemoryStats {
     pub freemem: ByteSize,
     physmem: u64,
@@ -31,9 +33,14 @@ pub struct PhysicalMemoryStats {
 }
 
 impl PhysicalMemoryStats {
-    pub fn from_kstat<'a>(
+    fn from_kstat<'a>(
         kst: &'a kstat_rs::Data<'a>,
     ) -> Result<Self, anyhow::Error> {
+        // Produce an error if we're missing named kstats that we expect or else
+        // if we see the same named kstat more than once.
+        // TODO It'd be neat to have a derive macro that would do this!  Maybe
+        // a serde deserializer?
+
         let mut physmem: Option<u64> = None;
         let mut freemem: Option<u64> = None;
         let mut availrmem: Option<u64> = None;
@@ -82,6 +89,9 @@ impl PhysicalMemoryStats {
     }
 }
 
+/// Given a named kstat, return the u64 value (if any)
+///
+/// Returns an error if the value is not a u64.
 fn kstat_value_u64<'a>(
     datum: &'a kstat_rs::Named<'a>,
 ) -> Result<u64, anyhow::Error> {

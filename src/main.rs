@@ -31,6 +31,8 @@ use std::fmt::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::str::FromStr;
 use std::sync::mpsc::RecvTimeoutError;
+use swappy::kstat::kstat_read_physmem;
+use swappy::kstat::PhysicalMemoryStats;
 
 #[derive(Debug)]
 struct SwappyError(anyhow::Error);
@@ -249,7 +251,9 @@ impl Swappy {
         let (monitor_tx, monitor_rx) = std::sync::mpsc::sync_channel(4);
         Swappy {
             mappings: Vec::new(),
-            monitor_thread: std::thread::spawn(move || monitor_thread(monitor_rx)),
+            monitor_thread: std::thread::spawn(move || {
+                monitor_thread(monitor_rx)
+            }),
             monitor_tx,
         }
     }
@@ -410,7 +414,8 @@ impl Swappy {
 
     pub fn disable_monitor(&self) {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        if let Err(error) = self.monitor_tx.send(MonitorMessage::StopStats(tx)) {
+        if let Err(error) = self.monitor_tx.send(MonitorMessage::StopStats(tx))
+        {
             // This is likely that the other thread panicked.
             eprintln!("warning: failed to disable monitor: {:#}", error);
         }
@@ -473,79 +478,6 @@ impl AnonInfo {
     }
 }
 
-fn kstat_value_u64<'a>(
-    datum: &'a kstat_rs::Named<'a>,
-) -> Result<u64, anyhow::Error> {
-    if let kstat_rs::NamedData::UInt64(value) = datum.value {
-        Ok(value)
-    } else {
-        Err(anyhow!(
-            "kstat named {:?}: expected u64, found {:?}",
-            datum.name,
-            datum.value
-        ))
-    }
-}
-
-#[derive(Debug)]
-struct PhysicalMemoryStats {
-    physmem: u64,
-    freemem: u64,
-    availrmem: u64,
-    lotsfree: u64,
-    desfree: u64,
-    minfree: u64,
-}
-
-impl PhysicalMemoryStats {
-    fn from_kstat<'a>(
-        kst: &'a kstat_rs::Data<'a>,
-    ) -> Result<Self, anyhow::Error> {
-        let mut physmem: Option<u64> = None;
-        let mut freemem: Option<u64> = None;
-        let mut availrmem: Option<u64> = None;
-        let mut lotsfree: Option<u64> = None;
-        let mut desfree: Option<u64> = None;
-        let mut minfree: Option<u64> = None;
-
-        let named = if let kstat_rs::Data::Named(named_stats) = kst {
-            named_stats
-        } else {
-            bail!("expected named kstat for reading physical memory");
-        };
-
-        for nst in named {
-            let which_value = match nst.name {
-                "physmem" => &mut physmem,
-                "freemem" => &mut freemem,
-                "availrmem" => &mut availrmem,
-                "lotsfree" => &mut lotsfree,
-                "desfree" => &mut desfree,
-                "minfree" => &mut minfree,
-                _ => continue,
-            };
-
-            if which_value.is_some() {
-                bail!("duplicate value for kstat named {:?}", nst.name);
-            }
-
-            let value = kstat_value_u64(nst)?;
-            *which_value = Some(value);
-        }
-
-        Ok(PhysicalMemoryStats {
-            physmem: physmem.ok_or_else(|| anyhow!("missing stat physmem"))?,
-            freemem: freemem.ok_or_else(|| anyhow!("missing stat freemem"))?,
-            availrmem: availrmem
-                .ok_or_else(|| anyhow!("missing stat availrmem"))?,
-            lotsfree: lotsfree
-                .ok_or_else(|| anyhow!("missing stat lotsfree"))?,
-            desfree: desfree.ok_or_else(|| anyhow!("missing stat desfree"))?,
-            minfree: minfree.ok_or_else(|| anyhow!("missing stat minfree"))?,
-        })
-    }
-}
-
 fn monitor_thread(
     rx: std::sync::mpsc::Receiver<MonitorMessage>,
 ) -> Result<(), anyhow::Error> {
@@ -572,7 +504,9 @@ fn monitor_thread(
                 Err(error) => {
                     return Err(error).context("waiting for StopStats")
                 }
-                Ok(MonitorMessage::StartStats) => panic!("stats already started"),
+                Ok(MonitorMessage::StartStats) => {
+                    panic!("stats already started")
+                }
                 Ok(MonitorMessage::StopStats(tx)) => {
                     tx.send(()).context("confirming StopStats")?;
                     break;
@@ -580,20 +514,6 @@ fn monitor_thread(
             }
         }
     }
-}
-
-fn kstat_read_physmem(
-    kstat: &kstat_rs::Ctl,
-) -> Result<PhysicalMemoryStats, anyhow::Error> {
-    let mut filter = kstat.filter(Some("unix"), Some(0), Some("system_pages"));
-    let mut kst =
-        filter.next().ok_or_else(|| anyhow!("found no system_pages kstats"))?;
-    if filter.next().is_some() {
-        bail!("found too many system_pages kstats");
-    }
-
-    let data = kstat.read(&mut kst).context("reading kstat")?;
-    PhysicalMemoryStats::from_kstat(&data)
 }
 
 fn monitor_print() {

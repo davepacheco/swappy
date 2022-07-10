@@ -1,13 +1,25 @@
 //! Interactive tool to mess around with swap and physical memory on illumos
 
 // TODO next ideas:
-// - better describe what "used" and "available" are
-// - add a command to remove swap mappings
+// - better describe what swap "used" and "available" are
+// - add commands:
+//   - hoover up memory for ARC
+//     - manage file
+//       - create zero-byte file on startup
+//       - extend it as requested.  when we extend it, write one byte to each
+//         page.
+//       - for "hoover", just read the file? (optional offset, size?)
+//   - hoover up memory for page cache
+//     - same file management as ARC; manage an mmap mapping size and read it?
+//   - hoover up memory for kmem (socket buffers?)
 // - play around with some real examples to validate how I think this works
 // - print out more kstats:
 //   - swap allocation failures
 //   - memory values: availrmem, freemem, etc.
 //   - pageout activity?
+// - spawn mdb up front and just write ::memstat and read output when we want to
+//   get the stats.  This will avoid forking a child process while we have huge
+//   mappings.
 
 use anyhow::anyhow;
 use anyhow::bail;
@@ -101,7 +113,8 @@ fn do_swap_create_mapping(
     swappy: &mut Swappy,
     reserved: bool,
 ) -> Result<Option<String>, SwappyError> {
-    let size_str: &String = args.get_one("size").unwrap();
+    let size_str: &String =
+        args.get_one("size").context("\"size\" argument")?;
     let bytes = bytesize::ByteSize::from_str(size_str)
         .map_err(|e| anyhow!("parsing size: {}", e))?;
     let bytes_u64 = bytes.as_u64();
@@ -115,27 +128,43 @@ fn do_swap_create_mapping(
 
     let mut s = String::new();
     write!(s, "new mapping: 0x{:x}\n\n", addr).unwrap();
-    let swapinfo = Swappy::swap_info().unwrap();
+    let swapinfo = Swappy::swap_info()?;
     s.push_str(&swapinfo.format());
     s.push_str("\n\n");
     s.push_str(&do_print_swap_mappings(swappy));
     Ok(Some(s))
 }
 
+fn cmd_swap_rm(
+    args: ArgMatches,
+    swappy: &mut Swappy,
+) -> Result<Option<String>, SwappyError> {
+    let addr_str: &String =
+        args.get_one("addr").context("\"addr\" argument")?;
+    let addr_usize: usize = parse_int::parse(addr_str)
+        .map_err(|e| anyhow!("parsing addr: {}", e))?;
+
+    swappy.swap_rm(addr_usize)?;
+
+    let swapinfo = Swappy::swap_info()?;
+    Ok(Some(swapinfo.format()))
+}
+
 fn cmd_swap_touch(
     args: ArgMatches,
     swappy: &mut Swappy,
 ) -> Result<Option<String>, SwappyError> {
-    let addr_str: &String = args.get_one("addr").unwrap();
+    let addr_str: &String =
+        args.get_one("addr").context("\"addr\" argument")?;
     let addr_usize: usize = parse_int::parse(addr_str)
-        .map_err(|e| anyhow!("parsing adr: {}", e))?;
+        .map_err(|e| anyhow!("parsing addr: {}", e))?;
 
     let mut s = String::new();
     if !swappy.swap_touch(addr_usize)? {
         s.push_str("warning: pages were already touched\n");
     }
 
-    let swapinfo = Swappy::swap_info().unwrap();
+    let swapinfo = Swappy::swap_info()?;
     s.push_str(&swapinfo.format());
     Ok(Some(s))
 }
@@ -180,6 +209,12 @@ fn main() -> ReplResult<()> {
                 .arg(Arg::new("size").required(true))
                 .about("Create a new swap mapping with NORESERVE"),
             cmd_swap_noreserve,
+        )
+        .with_command(
+            Command::new("swap-rm")
+                .arg(Arg::new("addr").required(true))
+                .about("Remove a swap mapping"),
+            cmd_swap_rm,
         )
         .with_command(
             Command::new("swap-touch")
@@ -265,6 +300,32 @@ impl Swappy {
 
         self.mappings.push(Mapping { addr, size, reserved, allocated: false });
         Ok(addr as usize)
+    }
+
+    pub fn swap_rm(&mut self, addr: usize) -> Result<(), anyhow::Error> {
+        let mapping = self
+            .mappings
+            .iter_mut()
+            .find(|m| m.addr as usize == addr)
+            .ok_or_else(|| anyhow!("no mapping with address 0x{:x}", addr))?;
+
+        let (addr, size, allocated) =
+            (mapping.addr, mapping.size, mapping.allocated);
+        if allocated {
+            self.enable_timer();
+        }
+        let rv = unsafe { libc::munmap(addr, size) };
+        let error = std::io::Error::last_os_error();
+        if allocated {
+            self.disable_timer();
+        }
+
+        if rv != 0 {
+            return Err(error).context("munmap");
+        }
+
+        self.mappings.retain(|m| m.addr != addr);
+        Ok(())
     }
 
     pub fn swap_touch(&mut self, addr: usize) -> Result<bool, anyhow::Error> {
